@@ -54,7 +54,7 @@ def is_constant(string: str) -> bool:
         ``True`` if the given string is a constant name, ``False`` otherwise.
     """
     return (
-        ((string[0] >= "0" and string[0] <= "9") or (string[0] >= "a" and string[0] <= "e")) and string.isalnum()
+            ((string[0] >= "0" and string[0] <= "9") or (string[0] >= "a" and string[0] <= "e")) and string.isalnum()
     ) or string == "_"
 
 
@@ -82,6 +82,54 @@ def is_function(string: str) -> bool:
         ``True`` if the given string is a function name, ``False`` otherwise.
     """
     return string[0] >= "f" and string[0] <= "t" and string.isalnum()
+
+
+def split_enclosed_expression(text: str) -> Tuple[str, str]:
+    opening = text[0]
+    closing = ']' if opening == '[' else ')'
+    depth = 0
+
+    for idx, char in enumerate(text):
+        if char == opening:
+            depth += 1
+        elif char == closing:
+            depth -= 1
+            if depth == 0:
+                return text[:idx + 1], text[idx + 1:]
+    return text, ''
+
+
+def get_operator(text: str) -> tuple[str, str]:
+    if text.startswith('<->'):
+        return text[:3], text[3:]
+    elif text.startswith('->'):
+        return text[:2], text[2:]
+    elif text[0] in '&|+':
+        return text[0], text[1:]
+
+
+def extract_component(text: str) -> Tuple[str, str]:
+    if not text:
+        return '', ''
+    if text[0] == '_':
+        return '_', text[1:]
+    pos = 0
+    while pos < len(text) and text[pos].isalnum():
+        pos += 1
+    if is_constant(text[0]) or is_variable(text[0]):
+        return text[:pos], text[pos:]
+    args_part, remaining = split_enclosed_expression(text[pos:])
+    return text[:pos] + args_part, remaining
+
+
+def parse_func_or_rel(text: str) -> Tuple:
+    name_end = 0
+    while name_end < len(text) and text[name_end].isalnum():
+        name_end += 1
+
+    name = text[:name_end]
+    args_part, rest = split_enclosed_expression(text[name_end:])
+    return name, args_part, rest
 
 
 @frozen
@@ -124,6 +172,10 @@ class Term:
             The standard string representation of the current term.
         """
         # Task 7.1
+        if is_variable(self.root) or is_constant(self.root):
+            return self.root
+        else:
+            return self.root + "(" + ",".join([str(a) for a in self.arguments]) + ")"
 
     def __eq__(self, other: object) -> bool:
         """Compares the current term with the given one.
@@ -167,6 +219,24 @@ class Term:
             that entire name (and not just a part of it, such as ``'x1'``).
         """
         # Task 7.3a
+        if is_constant(string[0]) or is_variable(string[0]):
+            component, remaining = extract_component(string)
+            if is_constant(string[0]):
+                return Term(component), remaining
+            else:
+                return Term(component), remaining
+        else:
+            name, args, remaining = parse_func_or_rel(string)
+            inner_args = args[1:-1].strip()
+            parsed_args = []
+
+            while inner_args:
+                arg, inner_args = Term._parse_prefix(inner_args)
+                parsed_args.append(arg)
+                if inner_args.startswith(','):
+                    inner_args = inner_args[1:].strip()
+
+            return Term(name, parsed_args), remaining
 
     @staticmethod
     def parse(string: str) -> Term:
@@ -179,6 +249,7 @@ class Term:
             A term whose standard string representation is the given string.
         """
         # Task 7.3b
+        return Term._parse_prefix(string)[0]
 
     def constants(self) -> Set[str]:
         """Finds all constant names in the current term.
@@ -187,6 +258,15 @@ class Term:
             A set of all constant names used in the current term.
         """
         # Task 7.5a
+        if is_constant(self.root):
+            return {self.root}
+        elif is_variable(self.root):
+            return set()
+        elif is_function(self.root):
+            res = set()
+            for arg in self.arguments:
+                res = res | Term.constants(arg)
+            return res
 
     def variables(self) -> Set[str]:
         """Finds all variable names in the current term.
@@ -195,6 +275,15 @@ class Term:
             A set of all variable names used in the current term.
         """
         # Task 7.5b
+        if is_variable(self.root):
+            return {self.root}
+        elif is_constant(self.root):
+            return set()
+        elif is_function(self.root):
+            res = set()
+            for arg in self.arguments:
+                res = res | Term.variables(arg)
+            return res
 
     def functions(self) -> Set[Tuple[str, int]]:
         """Finds all function names in the current term, along with their
@@ -205,11 +294,17 @@ class Term:
             all function names used in the current term.
         """
         # Task 7.5c
+        res = set()
+        if is_function(self.root):
+            res = res | {(self.root, len(self.arguments))}
+            for arg in self.arguments:
+                res = res | Term.functions(arg)
+        return res
 
     def substitute(
-        self,
-        substitution_map: Mapping[str, Term],
-        forbidden_variables: AbstractSet[str] = frozenset(),
+            self,
+            substitution_map: Mapping[str, Term],
+            forbidden_variables: AbstractSet[str] = frozenset(),
     ) -> Term:
         """Substitutes in the current term, each constant name `construct` or
         variable name `construct` that is a key in `substitution_map` with the
@@ -347,10 +442,10 @@ class Formula:
     statement: Optional[Formula]
 
     def __init__(
-        self,
-        root: str,
-        arguments_or_first_or_variable: Union[Sequence[Term], Formula, str],
-        second_or_statement: Optional[Formula] = None,
+            self,
+            root: str,
+            arguments_or_first_or_variable: Union[Sequence[Term], Formula, str],
+            second_or_statement: Optional[Formula] = None,
     ):
         """Initializes a `Formula` from its root and root arguments, root
         operands, or root quantified variable name and statement.
@@ -408,6 +503,16 @@ class Formula:
             The standard string representation of the current formula.
         """
         # Task 7.2
+        if is_equality(self.root):
+            return str(self.arguments[0]) + self.root + str(self.arguments[1])
+        elif is_relation(self.root):
+            return self.root + "(" + ",".join([str(argument) for argument in self.arguments]) + ")"
+        elif is_unary(self.root):
+            return self.root + str(self.first)
+        elif is_binary(self.root):
+            return "(" + str(self.first) + self.root + str(self.second) + ")"
+        else:
+            return self.root + str(self.variable) + "[" + str(self.statement) + "]"
 
     def __eq__(self, other: object) -> bool:
         """Compares the current formula with the given one.
@@ -452,6 +557,40 @@ class Formula:
             that entire name (and not just a part of it, such as ``'f(y)=x1'``).
         """
         # Task 7.4a
+        first_char = string[0]
+
+        if is_constant(first_char) or is_variable(first_char) or is_function(first_char):
+            left_term_str, remainder = extract_component(string)
+            right_term_str, remainder = extract_component(remainder[1:])
+            left_term = Term.parse(left_term_str)
+            right_term = Term.parse(right_term_str)
+            return Formula('=', [left_term, right_term]), remainder
+        elif is_relation(first_char):
+            rel_name, args_str, remainder = parse_func_or_rel(string)
+            args_content = args_str[1:-1].strip()
+            args = []
+            while args_content:
+                arg_str, args_content = extract_component(args_content)
+                arg_term = Term._parse_prefix(arg_str)[0]
+                args.append(arg_term)
+                if args_content.startswith(','):
+                    args_content = args_content[1:].strip()
+            return Formula(rel_name, args), remainder
+        elif is_unary(first_char):
+            sub_formula, remainder = Formula._parse_prefix(string[1:])
+            return Formula('~', sub_formula), remainder
+        elif is_quantifier(first_char):
+            quantifier = first_char
+            var_name, remainder = extract_component(string[1:])
+            scope_str, remainder = split_enclosed_expression(remainder)
+            scope_formula = Formula._parse_prefix(scope_str[1:-1])[0]
+            return Formula(quantifier, var_name, scope_formula), remainder
+        else:
+            inner_expr, remainder = split_enclosed_expression(string)
+            left_formula, inner_remainder = Formula._parse_prefix(inner_expr[1:])
+            op_str, right_part = get_operator(inner_remainder)
+            right_formula, _ = Formula._parse_prefix(right_part)
+            return Formula(op_str, left_formula, right_formula), remainder
 
     @staticmethod
     def parse(string: str) -> Formula:
@@ -464,6 +603,7 @@ class Formula:
             A formula whose standard string representation is the given string.
         """
         # Task 7.4b
+        return Formula._parse_prefix(string)[0]
 
     def constants(self) -> Set[str]:
         """Finds all constant names in the current formula.
@@ -472,6 +612,17 @@ class Formula:
             A set of all constant names used in the current formula.
         """
         # Task 7.6a
+        if is_quantifier(self.root):
+            return Formula.constants(self.statement)
+        elif is_unary(self.root):
+            return Formula.constants(self.first)
+        elif is_binary(self.root):
+            return Formula.constants(self.first) | Formula.constants(self.second)
+        elif is_equality(self.root) or is_relation(self.root):
+            res = set()
+            for arg in self.arguments:
+                res = res | Term.constants(arg)
+            return res
 
     def variables(self) -> Set[str]:
         """Finds all variable names in the current formula.
@@ -480,6 +631,17 @@ class Formula:
             A set of all variable names used in the current formula.
         """
         # Task 7.6b
+        if is_quantifier(self.root):
+            return Formula.variables(self.statement) | {self.variable}
+        elif is_unary(self.root):
+            return Formula.variables(self.first)
+        elif is_binary(self.root):
+            return Formula.variables(self.first) | Formula.variables(self.second)
+        elif is_equality(self.root) or is_relation(self.root):
+            res = set()
+            for arg in self.arguments:
+                res = res | Term.variables(arg)
+            return res
 
     def free_variables(self) -> Set[str]:
         """Finds all variable names that are free in the current formula.
@@ -489,6 +651,18 @@ class Formula:
             only within a scope of a quantification on that variable name.
         """
         # Task 7.6c
+        if is_quantifier(self.root):
+            res = Formula.free_variables(self.statement) - {self.variable}
+            return res
+        elif is_unary(self.root):
+            return Formula.free_variables(self.first)
+        elif is_binary(self.root):
+            return Formula.free_variables(self.first) | Formula.free_variables(self.second)
+        elif is_equality(self.root) or is_relation(self.root):
+            res = set()
+            for arg in self.arguments:
+                res = res | Term.variables(arg)
+            return res
 
     def functions(self) -> Set[Tuple[str, int]]:
         """Finds all function names in the current formula, along with their
@@ -499,6 +673,17 @@ class Formula:
             all function names used in the current formula.
         """
         # Task 7.6d
+        if is_quantifier(self.root):
+            return Formula.functions(self.statement)
+        elif is_unary(self.root):
+            return Formula.functions(self.first)
+        elif is_binary(self.root):
+            return Formula.functions(self.first) | Formula.functions(self.second)
+        elif is_equality(self.root) or is_relation(self.root):
+            res = set()
+            for arg in self.arguments:
+                res = res | Term.functions(arg)
+            return res
 
     def relations(self) -> Set[Tuple[str, int]]:
         """Finds all relation names in the current formula, along with their
@@ -509,11 +694,20 @@ class Formula:
             all relation names used in the current formula.
         """
         # Task 7.6e
+        if is_relation(self.root):
+            return {(self.root, len(self.arguments))}
+        elif is_quantifier(self.root):
+            return Formula.relations(self.statement)
+        elif is_unary(self.root):
+            return Formula.relations(self.first)
+        elif is_binary(self.root):
+            return Formula.relations(self.first) | Formula.relations(self.second)
+        return set()
 
     def substitute(
-        self,
-        substitution_map: Mapping[str, Term],
-        forbidden_variables: AbstractSet[str] = frozenset(),
+            self,
+            substitution_map: Mapping[str, Term],
+            forbidden_variables: AbstractSet[str] = frozenset(),
     ) -> Formula:
         """Substitutes in the current formula, each constant name `construct` or
         free occurrence of variable name `construct` that is a key in
@@ -563,7 +757,7 @@ class Formula:
         # Task 9.2
 
     def propositional_skeleton(
-        self,
+            self,
     ) -> Tuple[PropositionalFormula, Mapping[str, Formula]]:
         """Computes a propositional skeleton of the current formula.
 
